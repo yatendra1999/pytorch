@@ -3,7 +3,7 @@
 import sys
 
 import torch
-from torch.distributed._sharded_tensor import (
+from torch.distributed._shard import (
     shard_parameter,
 )
 from torch.testing._internal.common_distributed import (
@@ -28,7 +28,6 @@ if TEST_WITH_DEV_DBG_ASAN:
         file=sys.stderr,
     )
     sys.exit(0)
-
 
 class TestShardedTensorOpsLinear(ShardedTensorTestBase):
     def _run_sharded_linear(self, spec, input_size, linear_size, sharded_dim):

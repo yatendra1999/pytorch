@@ -2,11 +2,11 @@ from typing import List, cast
 
 import torch
 import torch.distributed as dist
-from torch.distributed._sharded_tensor.ops._common import (
+from torch.distributed._shard.sharded_tensor.ops._common import (
     _handle_col_wise_sharding_common,
 )
-from torch.distributed._sharding_spec import ChunkShardingSpec
-from torch.distributed._sharding_spec._internals import (
+from torch.distributed._shard.sharding_spec import ChunkShardingSpec
+from torch.distributed._shard.sharding_spec._internals import (
     get_split_size,
     get_chunked_dim_size,
 )
@@ -72,7 +72,7 @@ def sharded_linear(types, args, kwargs, pg):
     5. If placements are not in order any appropriate rearrangement of rows
        are done for the (13 x 16) matrix and finally the bias term is added.
     """
-    from torch.distributed._sharded_tensor import ShardedTensor
+    from torch.distributed._shard import ShardedTensor
 
     input = args[0]
     weight = args[1]
@@ -108,11 +108,18 @@ def sharded_linear(types, args, kwargs, pg):
     rank = dist.get_rank(pg)
 
     if sharding_dim == 1:
-        return _handle_row_wise_sharding(input, world_size, weight, rank, local_shard_t, bias, pg)
+        return _handle_row_wise_sharding(
+            input, world_size, weight, rank, local_shard_t, bias, pg
+        )
     elif sharding_dim == 0:
-        return _handle_col_wise_sharding(input, world_size, weight, local_shard_t, bias, pg)
+        return _handle_col_wise_sharding(
+            input, world_size, weight, local_shard_t, bias, pg
+        )
     else:
-        raise RuntimeError(f'nn.Linear weight sharded on dim {sharding_dim} not supported!')
+        raise RuntimeError(
+            f"nn.Linear weight sharded on dim {sharding_dim} not supported!"
+        )
+
 
 def _handle_col_wise_sharding(input, world_size, weight, local_shard_t, bias, pg):
     return _handle_col_wise_sharding_common(
@@ -157,10 +164,14 @@ def _handle_row_wise_sharding(input, world_size, weight, rank, local_shard_t, bi
 
         input_t = input_t.index_select(0, torch.tensor(indices_flatten, device=input_t.device))
 
-    gathered_input = torch.empty(input_split_sizes[rank] * world_size, input_t_size[1], device=input_t.device)
+    gathered_input = torch.empty(
+        input_split_sizes[rank] * world_size, input_t_size[1], device=input_t.device
+    )
 
     # Perform alltoall
-    dist.all_to_all_single(gathered_input, input_t, input_split_sizes=input_split_sizes, group=pg)
+    dist.all_to_all_single(
+        gathered_input, input_t, input_split_sizes=input_split_sizes, group=pg
+    )
     gathered_input = gathered_input.t()
 
     # Perform local matmuls for all shards
