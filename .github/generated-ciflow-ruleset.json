@@ -21,7 +21,7 @@
       "parallelnative-linux-xenial-py3.6-gcc5.4",
       "periodic-libtorch-linux-xenial-cuda11.1-py3.6-gcc7",
       "periodic-linux-xenial-cuda10.2-py3-gcc7-slow-gradcheck",
-      "periodic-linux-xenial-cuda11.1-py3.6-gcc7",
+      "periodic-linux-xenial-cuda11.1-py3.6-gcc7-debug",
       "periodic-win-vs2019-cuda11.1-py3",
       "win-vs2019-cpu-py3",
       "win-vs2019-cuda11.3-py3"
@@ -48,7 +48,7 @@
       "linux-xenial-cuda11.3-py3.6-gcc7",
       "periodic-libtorch-linux-xenial-cuda11.1-py3.6-gcc7",
       "periodic-linux-xenial-cuda10.2-py3-gcc7-slow-gradcheck",
-      "periodic-linux-xenial-cuda11.1-py3.6-gcc7",
+      "periodic-linux-xenial-cuda11.1-py3.6-gcc7-debug",
       "periodic-win-vs2019-cuda11.1-py3",
       "win-vs2019-cuda11.3-py3"
     ],
@@ -91,7 +91,7 @@
       "parallelnative-linux-xenial-py3.6-gcc5.4",
       "periodic-libtorch-linux-xenial-cuda11.1-py3.6-gcc7",
       "periodic-linux-xenial-cuda10.2-py3-gcc7-slow-gradcheck",
-      "periodic-linux-xenial-cuda11.1-py3.6-gcc7"
+      "periodic-linux-xenial-cuda11.1-py3.6-gcc7-debug"
     ],
     "ciflow/mobile": [
       "linux-xenial-py3-clang5-mobile-build",
@@ -111,7 +111,7 @@
     "ciflow/scheduled": [
       "periodic-libtorch-linux-xenial-cuda11.1-py3.6-gcc7",
       "periodic-linux-xenial-cuda10.2-py3-gcc7-slow-gradcheck",
-      "periodic-linux-xenial-cuda11.1-py3.6-gcc7",
+      "periodic-linux-xenial-cuda11.1-py3.6-gcc7-debug",
       "periodic-win-vs2019-cuda11.1-py3"
     ],
     "ciflow/slow": [
