@@ -9870,6 +9870,8 @@ op_db: List[OpInfo] = [
            gradcheck_nondet_tol=GRADCHECK_NONDET_TOL),
     OpInfo('index_add',
            dtypes=all_types_and_complex_and(torch.bool, torch.float16, torch.bfloat16),
+           # An `out=` variant exists but is not exposed to the Python API
+           # see: https://github.com/pytorch/pytorch/pull/65993#discussion_r737760723
            supports_out=False,
            supports_forward_ad=True,
            sample_inputs_func=sample_inputs_index_add,
