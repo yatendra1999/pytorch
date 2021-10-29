@@ -63,6 +63,8 @@ ALLOW_LIST = [
     ("prim::TensorExprDynamicGuard", datetime.date(2021, 11, 20)),
     ("caffe2::", datetime.date(2021, 10, 23)),
     ("aten::kl_div_backward", datetime.date(2021, 11, 20)),
+    ("aten::l1_loss_backward.grad_input", datetime.date(2021, 11, 20)),
+    ("aten::smooth_l1_loss_backward.grad_input", datetime.date(2021, 11, 20)),
 ]
 
 ALLOW_LIST_COMPILED = [
