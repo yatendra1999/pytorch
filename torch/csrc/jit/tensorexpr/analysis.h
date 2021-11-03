@@ -248,6 +248,221 @@ class ModifiesVarChecker : public IRVisitor {
   bool found_{false};
 };
 
+// This indicates the path from root to a stmt A in AST. Specifically, it
+// consists of a vector of integers: each integer represents the number of stmts
+// before A's ancestor or A in the block. For example, "1:1:0" points to stmt
+// "d[i] += e[i, j];" in the following code.
+//
+// c = a/b;
+// for i
+//  d[i] = 0;
+//  for j
+//    d[i] += e[i, j];
+class StmtTrace {
+ public:
+  void append(int32_t id) {
+    trace_.emplace_back(id);
+  }
+  void pop() {
+    trace_.pop_back();
+  }
+
+  const std::vector<int32_t>& getTrace() {
+    return trace_;
+  }
+
+  bool operator==(StmtTrace& trace) {
+    auto compare = trace.getTrace();
+    if (trace_.size() != compare.size()) {
+      return false;
+    }
+    int size = compare.size();
+    for (int i = 0; i < size; i++) {
+      if (trace_.at(i) != compare.at(i)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool operator<(StmtTrace& trace) {
+    auto compare = trace.getTrace();
+    int size = trace_.size() < compare.size() ? trace_.size() : compare.size();
+    for (int i = 0; i < size; i++) {
+      if (trace_.at(i) > compare.at(i)) {
+        return false;
+      }
+    }
+    return !(*this == trace);
+  }
+
+  bool operator>(StmtTrace& trace) {
+    auto compare = trace.getTrace();
+    int size = trace_.size() < compare.size() ? trace_.size() : compare.size();
+    for (int i = 0; i < size; i++) {
+      if (trace_.at(i) < compare.at(i)) {
+        return false;
+      }
+    }
+    return !(*this == trace);
+  }
+
+  std::string getTraceString() {
+    std::string cstr = "";
+    for (int i = 0; i < trace_.size(); i++) {
+      cstr += std::to_string(trace_.at(i));
+      cstr += ":";
+    }
+    return cstr;
+  }
+
+ private:
+  std::vector<int32_t> trace_;
+};
+
+// Traverse the root stmt to identify the position of each stmt in the AST,
+// i.e., a StmtTrace
+class StmtTracer : public IRVisitor {
+ public:
+  StmtTrace getStmtTrace() {
+    return trace_;
+  }
+
+ private:
+  void visit(BlockPtr v) {
+    if (flatten_) {
+      for (StmtPtr s : *v) {
+        s->accept(this);
+      }
+      return;
+    }
+
+    int count = 0;
+    for (StmtPtr s : *v) {
+      trace_.append(count);
+      s->accept(this);
+      trace_.pop();
+      count++;
+    }
+  }
+
+  void visit(CondPtr v) {
+    flatten_ = true;
+    ExprPtr condition = v->condition();
+    StmtPtr true_stmt = v->true_stmt();
+    StmtPtr false_stmt = v->false_stmt();
+    condition->accept(this);
+    if (true_stmt) {
+      true_stmt->accept(this);
+    }
+    if (false_stmt) {
+      false_stmt->accept(this);
+    }
+    flatten_ = false;
+  }
+
+  StmtTrace trace_;
+  bool flatten_ = false;
+};
+
+enum AccMode { READ, WRITE, REDUCE };
+
+// Traverses the IR to identify all reads/writes to a buf, and their positions
+// in the AST which is represented as a StmtTrace
+using BufAccessInfo = std::tuple<StmtPtr, AccMode, StmtTrace>;
+class BufAccesses : public StmtTracer {
+ public:
+  BufAccesses(BufPtr b) : buf_(b) {}
+
+  std::vector<std::tuple<StmtPtr, AccMode, StmtTrace>> accesses() {
+    return accesses_;
+  }
+
+  static std::vector<std::tuple<StmtPtr, AccMode, StmtTrace>> find(
+      StmtPtr s,
+      BufPtr b) {
+    BufAccesses finder(b);
+    s->accept(&finder);
+    return finder.accesses();
+  }
+
+ private:
+  bool readBuffer(StmtPtr s) {
+    auto loads1 = NodeFinder<Load>::find(s);
+    for (auto l : loads1) {
+      if (l->buf() == buf_) {
+        return true;
+      }
+    }
+    auto loads2 = NodeFinder<ExternalCall>::find(s);
+    for (auto l : loads2) {
+      for (auto lb : l->buf_args()) {
+        if (lb == buf_) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  bool writeBuffer(StmtPtr s) {
+    auto writes1 = NodeFinder<Store>::find(s);
+    for (auto w : writes1) {
+      if (w->buf() == buf_) {
+        return true;
+      }
+    }
+    auto writes2 = NodeFinder<ExternalCall>::find(s);
+    for (auto w : writes2) {
+      if (w->buf() == buf_) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void insertAccesses(StmtPtr s) {
+    bool has_reads = readBuffer(s), has_writes = writeBuffer(s);
+    if (has_reads && has_writes) {
+      auto acc = std::make_tuple(s, AccMode::REDUCE, getStmtTrace());
+      accesses_.push_back(acc);
+      return;
+    }
+    if (has_reads) {
+      auto acc = std::make_tuple(s, AccMode::READ, getStmtTrace());
+      accesses_.push_back(acc);
+      return;
+    }
+    if (has_writes) {
+      auto acc = std::make_tuple(s, AccMode::WRITE, getStmtTrace());
+      accesses_.push_back(acc);
+    }
+  }
+
+  void visit(StorePtr v) {
+    insertAccesses(v);
+  }
+
+  void visit(LetPtr v) {
+    insertAccesses(v);
+  }
+
+  void visit(CondPtr v) {
+    insertAccesses(v);
+  }
+
+  void visit(AtomicAddPtr v) {
+    insertAccesses(v);
+  }
+
+  void visit(ExternalCallPtr v) {
+    insertAccesses(v);
+  }
+
+  BufPtr buf_;
+  std::vector<BufAccessInfo> accesses_;
+};
+
 // A class that analyzes the given program relevant for Block backend
 // It creates a map of multi dim buffers and their flat verions
 class CreateBufferMap : public IRVisitor {
