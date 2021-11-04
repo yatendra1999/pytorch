@@ -190,8 +190,7 @@ LazyNativeFunctions::convolution_backward_overrideable(
     int64_t groups, std::array<bool, 3> output_mask) {
   // Lower to cudnn_convolution_backward when possbile
   if (at::globalContext().userEnabledCuDNN() &&
-      compiler::getBackend()
-              ->HardwareDeviceType() == at::kCUDA) {
+      compiler::getBackend()->EagerFallbackDeviceType() == at::kCUDA) {
     LTC_FN_COUNTER("lazy::");
     auto result = lazy_tensor_aten_ops::convolution_backward_overrideable(
         bridge::GetLtcTensor(grad_output), bridge::GetLtcTensor(input),
@@ -229,8 +228,10 @@ LazyNativeFunctions::convolution_backward_overrideable(
           << " input=" << input.toString() << " weight=" << weight.toString();
   const auto kernel_size = weight.sizes().slice(2);
   CHECK(kernel_size.size() == 2 || kernel_size.size() == 3);
+  // TODO(whc) make a backend API for 'getEagerFallbackDevice(lazy::Device)'?
   const at::DeviceType device_type =
-      compiler::getBackend()->HardwareDeviceType();
+      compiler::getBackend()->EagerFallbackDeviceType();
+  auto backend_device = bridge::GetSameBackendDeviceOrUseDefault(grad_output);
   if (transposed) {
     at::TensorOptions options = at::TensorOptions().device(device_type);
     auto&& x_result =
@@ -254,12 +255,9 @@ LazyNativeFunctions::convolution_backward_overrideable(
                                  at::MemoryFormat::Preserve),
                   output_mask);
     return std::tuple<at::Tensor, at::Tensor, at::Tensor>(
-        bridge::CreateLtcTensor(std::get<0>(x_result),
-                                bridge::GetLtcDevice(grad_output)),
-        bridge::CreateLtcTensor(std::get<1>(x_result),
-                                bridge::GetLtcDevice(grad_output)),
-        bridge::CreateLtcTensor(std::get<2>(x_result),
-                                bridge::GetLtcDevice(grad_output)));
+        bridge::CreateLtcTensor(std::get<0>(x_result), backend_device),
+        bridge::CreateLtcTensor(std::get<1>(x_result), backend_device),
+        bridge::CreateLtcTensor(std::get<2>(x_result), backend_device));
   }
   auto&& x_result =
       kernel_size.size() == 2
@@ -272,12 +270,9 @@ LazyNativeFunctions::convolution_backward_overrideable(
                 weight.to(device_type), kernel_size, stride, padding, dilation,
                 output_mask);
   return std::tuple<at::Tensor, at::Tensor, at::Tensor>(
-      bridge::CreateLtcTensor(std::get<0>(x_result),
-                              bridge::GetLtcDevice(grad_output)),
-      bridge::CreateLtcTensor(std::get<1>(x_result),
-                              bridge::GetLtcDevice(grad_output)),
-      bridge::CreateLtcTensor(std::get<2>(x_result),
-                              bridge::GetLtcDevice(grad_output)));
+      bridge::CreateLtcTensor(std::get<0>(x_result), backend_device),
+      bridge::CreateLtcTensor(std::get<1>(x_result), backend_device),
+      bridge::CreateLtcTensor(std::get<2>(x_result), backend_device));
 }
 
 at::Tensor LazyNativeFunctions::convolution_overrideable(
@@ -364,15 +359,18 @@ at::Tensor LazyNativeFunctions::empty(
     c10::optional<at::Layout> layout, c10::optional<at::Device> device,
     c10::optional<bool> pin_memory,
     c10::optional<at::MemoryFormat> memory_format) {
-  const auto device_type =
-      compiler::getBackend()->HardwareDeviceType();
+  const auto device_type = compiler::getBackend()->EagerFallbackDeviceType();
   at::TensorOptions options = at::TensorOptions()
                                   .device(c10::Device(device_type))
                                   .layout(layout)
                                   .pinned_memory(pin_memory)
                                   .dtype(dtype);
   auto x_result = at::empty(size, options, memory_format);
-  return bridge::CreateLtcTensor(x_result, bridge::GetLtcDevice(device));
+  c10::optional<torch_lazy_tensors::Device> backend_device = c10::nullopt;
+  if (device) {
+    backend_device = compiler::getBackend()->GetBackendDevice(*device);
+  }
+  return bridge::CreateLtcTensor(x_result, backend_device);
 }
 
 at::Tensor LazyNativeFunctions::empty_strided(

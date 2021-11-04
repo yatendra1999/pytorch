@@ -19,7 +19,7 @@ namespace {
 class AtenLtcTsTensorTest : public AtenLtcTsTensorTestBase {};
 
 bool IsCuda() {
-  return compiler::getBackend()->HardwareDeviceType() ==
+  return compiler::getBackend()->EagerFallbackDeviceType() ==
          at::kCUDA;
 }
 

@@ -8,8 +8,34 @@
 namespace torch_lazy_tensors {
 namespace compiler {
 
+struct TSBackendDeviceType : public BackendDeviceType {
+  TSBackendDeviceType() = delete;
+  TSBackendDeviceType(c10::DeviceType deviceType) {
+    TORCH_CHECK(supported_device_types_.find((int8_t)deviceType) !=
+                supported_device_types_.end());
+    type = (int8_t)deviceType;
+  }
+
+  std::string toString() const override {
+    return c10::DeviceTypeName((c10::DeviceType)type);
+  }
+
+  c10::DeviceType c10Type() const { return (c10::DeviceType)type; }
+
+ private:
+  static const std::set<int8_t> supported_device_types_;
+};
+const std::set<int8_t> TSBackendDeviceType::supported_device_types_ = {
+    (int8_t)at::kCPU, (int8_t)at::kCUDA};
+
 class TSBackendImpl : public BackendImplInterface {
  public:
+  TSBackendImpl() : default_device_type_(at::kCPU) {
+    auto type = lazy_tensors::sys_util::GetEnvBool("LTC_TS_CUDA", false)
+                    ? at::kCUDA
+                    : at::kCPU;
+    default_device_type_ = TSBackendDeviceType(type);
+  }
   std::unique_ptr<ir::LoweringContext> CreateLoweringContext(
       const std::string& name, Device device,
       c10::ArrayRef<torch::lazy::Node*> post_order,
@@ -39,7 +65,8 @@ class TSBackendImpl : public BackendImplInterface {
   BackendDataPtr MakeComputationDataFromTensor(
       const at::Tensor& tensor, const lazy_tensors::Shape& shape,
       const Device& device) const override {
-    at::TensorOptions options = tensor.options().device(HardwareDeviceType());
+    at::TensorOptions options =
+        tensor.options().device(default_device_type_.c10Type());
     return std::make_shared<TSData>(tensor.to(options), shape, device);
   }
 
@@ -54,6 +81,7 @@ class TSBackendImpl : public BackendImplInterface {
   //////////////computation client interfaces///////////////////////
 
  public:
+  // TODO(whc) why did I put this inside the class?  move it out?
   class TSData : public BackendData {
    public:
     TSData(const at::Tensor& data, const lazy_tensors::Shape& shape,
@@ -79,8 +107,8 @@ class TSBackendImpl : public BackendImplInterface {
     at::Tensor data_;
   };
 
-  BackendDataPtr CreateDataPlaceholder(const Device& device,
-      const lazy_tensors::Shape& shape) const override;
+  BackendDataPtr CreateDataPlaceholder(
+      const Device& device, const lazy_tensors::Shape& shape) const override;
 
   std::vector<ComputationPtr> Compile(
       std::vector<ComputationPtr> instances) const override;
@@ -89,19 +117,28 @@ class TSBackendImpl : public BackendImplInterface {
       Computation& computation, c10::ArrayRef<BackendDataPtr> arguments,
       const Device& device) const override;
 
-  std::string GetDefaultDevice() const override;
+  std::shared_ptr<torch_lazy_tensors::BackendDeviceType> GetDefaultDeviceType()
+      const override {
+    return std::make_shared<BackendDeviceType>(default_device_type_);
+  }
 
-  size_t GetNumDevices() const override { return 1; }
+  at::DeviceType EagerFallbackDeviceType() const override;
 
-  std::vector<std::string> GetLocalDevices() const override;
+  void SetDefaultDeviceType(std::string type) override {
+    default_device_type_ = TSBackendDeviceType(c10::Device(type).type());
+    // The first CUDA usage could happen via lazy tensors. Initialize CUDA here
+    // to account for that, at::scalar_tensor constructor triggers everything we
+    // need.
+    static auto init_cuda = default_device_type_.c10Type() == at::kCUDA
+                                ? c10::optional<at::Tensor>(at::scalar_tensor(
+                                      0, at::TensorOptions().device(at::kCUDA)))
+                                : c10::nullopt;
+  }
 
-  std::vector<std::string> GetAllDevices() const override;
+  std::vector<torch_lazy_tensors::Device> GetBackendDevices() const override;
 
-  void SetReplicationDevices(
-      std::shared_ptr<std::vector<std::string>> devices) const override;
-
-  std::shared_ptr<std::vector<std::string>> GetReplicationDevices()
-      const override;
+  torch_lazy_tensors::Device GetBackendDevice(
+      c10::Device device) const override;
 
   void SetRngSeed(size_t seed) const override {
     LOG(FATAL) << "Not implemented yet.";
@@ -115,11 +152,12 @@ class TSBackendImpl : public BackendImplInterface {
 
   void PrepareToExit() const override;
 
-  at::DeviceType HardwareDeviceType() const override;
+ private:
+  TSBackendDeviceType default_device_type_;
 };
 
-BackendDataPtr TSBackendImpl::CreateDataPlaceholder(const Device& device,
-      const lazy_tensors::Shape& shape) const {
+BackendDataPtr TSBackendImpl::CreateDataPlaceholder(
+    const Device& device, const lazy_tensors::Shape& shape) const {
   return std::make_shared<TSBackendImpl::TSData>(shape, device);
 }
 
@@ -142,7 +180,7 @@ std::vector<BackendDataPtr> TSBackendImpl::ExecuteComputation(
   for (auto argument : arguments) {
     const auto ts_data =
         std::static_pointer_cast<TSBackendImpl::TSData>(argument);
-    CHECK(HardwareDeviceType() != at::kCUDA ||
+    CHECK((c10::DeviceType)default_device_type_.type != at::kCUDA ||
           ts_data->data().device().type() == at::kCUDA);
     stack.emplace_back(ts_data->data());
   }
@@ -160,52 +198,28 @@ std::vector<BackendDataPtr> TSBackendImpl::ExecuteComputation(
   return results;
 }
 
-std::string TSBackendImpl::GetDefaultDevice() const {
-  switch (HardwareDeviceType()) {
-    case at::kCPU: {
-      return "CPU:0";
-    }
-    case at::kCUDA: {
-      return "GPU:0";
-    }
-    default: {
-      LOG(FATAL) << "Invalid device type";
-    }
-  }
-}
-
-std::vector<std::string> TSBackendImpl::GetLocalDevices() const {
-  return {GetDefaultDevice()};
-}
-
-std::vector<std::string> TSBackendImpl::GetAllDevices() const {
-  return GetLocalDevices();
-}
-
-void TSBackendImpl::SetReplicationDevices(
-    std::shared_ptr<std::vector<std::string>> devices) const {
-  CHECK_EQ(devices->size(), size_t(1)) << "Replication not supported yet";
-}
-
-std::shared_ptr<std::vector<std::string>> TSBackendImpl::GetReplicationDevices()
+std::vector<torch_lazy_tensors::Device> TSBackendImpl::GetBackendDevices()
     const {
-  return nullptr;
+  std::vector<torch_lazy_tensors::Device> devices;
+  // TODO(whc) figure out how to query available devices from pytorch
+  devices.emplace_back(GetBackendDevice(c10::Device(c10::kCPU, 0)));
+  devices.emplace_back(GetBackendDevice(c10::Device(c10::kCUDA, 0)));
+  return devices;
+}
+
+torch_lazy_tensors::Device TSBackendImpl::GetBackendDevice(
+    c10::Device device) const {
+  // Note, we ignore the device type specified by the c10::Device since it is
+  // expected to be a virtual device (lazy::), but we need to change this when
+  // we support lazy as a mode
+  return torch_lazy_tensors::Device(GetDefaultDeviceType(), device.index());
 }
 
 void TSBackendImpl::PrepareToExit() const {}
 
-at::DeviceType TSBackendImpl::HardwareDeviceType() const {
-  static auto device_type =
-      lazy_tensors::sys_util::GetEnvBool("LTC_TS_CUDA", false) ? at::kCUDA
-                                                               : at::kCPU;
-  // The first CUDA usage could happen via lazy tensors. Initialize CUDA here to
-  // account for that, at::scalar_tensor constructor triggers everything we
-  // need.
-  static c10::optional<at::Tensor> init_cuda =
-      device_type == at::kCUDA ? c10::optional<at::Tensor>(at::scalar_tensor(
-                                     0, at::TensorOptions().device(at::kCUDA)))
-                               : c10::nullopt;
-  return device_type;
+c10::DeviceType TSBackendImpl::EagerFallbackDeviceType() const {
+  // For TS backend, hardware device _is_ eager device
+  return (c10::DeviceType)GetDefaultDeviceType()->type;
 }
 
 compiler::BackendImplInterface* GetTSBackendImpl() {

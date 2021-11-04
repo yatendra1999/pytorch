@@ -13,40 +13,6 @@ namespace torch_lazy_tensors {
 namespace bridge {
 namespace {
 
-// TODO(alanwaketan): Move it to the backend interface.
-class AtenLtcDeviceMapper {
- public:
-  static AtenLtcDeviceMapper* Get();
-
-  size_t GetDeviceOrdinal(const Device& device) const {
-    auto it = devices_ordinals_.find(device);
-    CHECK(it != devices_ordinals_.end()) << device;
-    return it->second;
-  }
-
-  const Device& GetDeviceFromOrdinal(size_t ordinal) const {
-    return devices_.at(ordinal);
-  }
-
- private:
-  AtenLtcDeviceMapper() {
-    for (auto& device_str :
-         compiler::getBackend()->GetLocalDevices()) {
-      // TODO(alanwaketan): The backend should do the mapping themselves, and construct the device accordingly.
-      devices_.emplace_back();
-      devices_ordinals_[devices_.back()] = devices_.size() - 1;
-    }
-  }
-
-  std::vector<Device> devices_;
-  std::map<Device, size_t> devices_ordinals_;
-};
-
-AtenLtcDeviceMapper* AtenLtcDeviceMapper::Get() {
-  static AtenLtcDeviceMapper* device_mapper = new AtenLtcDeviceMapper();
-  return device_mapper;
-}
-
 LTCTensorImpl* GetLtcTensorImpl(const at::Tensor& tensor) {
   return dynamic_cast<LTCTensorImpl*>(tensor.unsafeGetTensorImpl());
 }
@@ -106,9 +72,11 @@ LazyTensor GetOrCreateLtcTensor(const c10::optional<at::Tensor>& tensor,
   return xtensor ? *xtensor : LazyTensor::Create(*tensor, device);
 }
 
-LazyTensor GetLtcTensorOrCreateForWrappedNumber(const at::Tensor& tensor, const Device& device) {
-  return tensor.unsafeGetTensorImpl()->is_wrapped_number() ?
-      GetOrCreateLtcTensor(tensor, device) : GetLtcTensor(tensor);
+LazyTensor GetLtcTensorOrCreateForWrappedNumber(const at::Tensor& tensor,
+                                                const Device& device) {
+  return tensor.unsafeGetTensorImpl()->is_wrapped_number()
+             ? GetOrCreateLtcTensor(tensor, device)
+             : GetLtcTensor(tensor);
 }
 
 std::vector<at::Tensor> LtcCreateTensorList(const at::TensorList& tensors) {
@@ -198,53 +166,31 @@ void LtcUpdateTensorsMeta(c10::ArrayRef<at::Tensor> dest_ltc_tensors,
     ltc_dest.SetTensor(source);
   }
 }
+// TODO(whc) do we need 'orUseDefault?'
+// or can we require that one of the input tensors is lazy?, and the caller
+// should know if they are promoting a tensor to Lazy for the first time?
 
-c10::optional<Device> GetLtcDevice(const at::Tensor& tensor) {
-  auto xtensor = TryGetLtcTensor(tensor);
-  if (!xtensor) {
-    return c10::nullopt;
-  }
-  return xtensor->GetDevice();
+// Needed zero-arg version to make variadic template work
+c10::optional<Device> GetSameBackendDeviceOrUseDefault() { 
+  return Device(compiler::getBackend()->GetDefaultDeviceType(), 0);
 }
-
-c10::optional<Device> GetLtcDevice(const c10::optional<at::Tensor>& tensor) {
-  if (!tensor.has_value()) {
-    return c10::nullopt;
-  }
-  return GetLtcDevice(*tensor);
-}
-
-c10::optional<Device> GetLtcDevice(const at::TensorList& tensors) {
+c10::optional<Device> GetSameBackendDeviceOrUseDefault(const at::TensorList& tensors) {
   for (const auto& tensor : tensors) {
-    auto device = GetLtcDevice(tensor);
-    if (device) {
-      return device;
+    if (c10::optional<LazyTensor> lt = TryGetLtcTensor(tensor)) {
+      return lt->GetDevice();
     }
   }
-  return c10::nullopt;
+  return GetSameBackendDeviceOrUseDefault();
 }
 
-c10::optional<Device> GetLtcDevice(const at::TensorOptions& tensor_options) {
-  if (!tensor_options.has_device()) {
-    return c10::nullopt;
+c10::optional<Device> GetSameBackendDeviceOrUseDefault(const at::Tensor& tensor) {
+  if (c10::optional<LazyTensor> lt = TryGetLtcTensor(tensor)) {
+    return lt->GetDevice();
   }
-  return GetLtcDevice(tensor_options.device());
+  return GetSameBackendDeviceOrUseDefault();
 }
 
-c10::optional<Device> GetLtcDevice(const c10::Device& device) {
-  if (device.type() != at::kLazy) {
-    return c10::nullopt;
-  }
-  return AtenDeviceToLtcDevice(device);
-}
-
-c10::optional<Device> GetLtcDevice(const c10::optional<c10::Device>& device) {
-  if (!device) {
-    return c10::nullopt;
-  }
-  return GetLtcDevice(*device);
-}
-
+// TODO(whc) refactor this too; what do we want to do with 'CurrentDevice'?
 Device AtenDeviceToLtcDevice(const c10::Device& device) {
   CHECK_EQ(device.type(), at::kLazy) << device;
   int ordinal = device.has_index() ? device.index() : -1;
@@ -257,12 +203,11 @@ Device AtenDeviceToLtcDevice(const c10::Device& device) {
   if (ordinal < 0) {
     return GetCurrentDevice();
   }
-  return AtenLtcDeviceMapper::Get()->GetDeviceFromOrdinal(ordinal);
+  return Device(compiler::getBackend()->GetDefaultDeviceType(), ordinal);
 }
 
 c10::Device LtcDeviceToAtenDevice(const Device& device) {
-  return c10::Device(at::kLazy,
-                     AtenLtcDeviceMapper::Get()->GetDeviceOrdinal(device));
+  return c10::Device(at::kLazy, device.ordinal());
 }
 
 std::string ToLtcString(const c10::Device& device) {

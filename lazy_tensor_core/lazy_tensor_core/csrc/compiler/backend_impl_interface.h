@@ -5,6 +5,7 @@
 #include <atomic>
 
 #include "lazy_tensor_core/csrc/compiler/data.h"
+#include "lazy_tensor_core/csrc/device.h"
 #include "lazy_tensor_core/csrc/lowering_context.h"
 #include "lazy_tensors/shape.h"
 
@@ -36,8 +37,8 @@ class BackendImplInterface {
       const at::Tensor& tensor, const lazy_tensors::Shape& shape,
       const Device& device) const = 0;
 
-  virtual BackendDataPtr CreateDataPlaceholder(const Device& device,
-      const lazy_tensors::Shape& shape) const = 0;
+  virtual BackendDataPtr CreateDataPlaceholder(
+      const Device& device, const lazy_tensors::Shape& shape) const = 0;
 
   virtual at::Tensor MakeTensorFromComputationData(
       const BackendDataPtr data,
@@ -70,22 +71,34 @@ class BackendImplInterface {
    * Device Configuration
    * */
 
-  virtual std::string GetDefaultDevice() const = 0;
+  // Set or get the default device type.
+  // For backends used with virtual c10:: Devices, this configures what real
+  // device type the backend should use, and matters if the backend supports
+  // more than one type of real device.
+  virtual std::shared_ptr<torch_lazy_tensors::BackendDeviceType>
+  GetDefaultDeviceType() const = 0;
+  virtual void SetDefaultDeviceType(std::string) = 0;
 
-  virtual size_t GetNumDevices() const = 0;
+  // Specify which aten device should be used for eager fallback
+  // may change depending on current 'Default' DeviceType
+  virtual at::DeviceType EagerFallbackDeviceType() const = 0;
 
-  // TODO: Return std::vector<Device> instead.
-  virtual std::vector<std::string> GetLocalDevices() const = 0;
 
-  virtual std::vector<std::string> GetAllDevices() const = 0;
+  // Query all available backend devices
+  virtual std::vector<torch_lazy_tensors::Device> GetBackendDevices() const = 0;
 
-  virtual void SetReplicationDevices(
-      std::shared_ptr<std::vector<std::string>> devices) const = 0;
+  // Map a particular c10:: device to a concrete backend device
+  // Note:: c10:: devices may be virtual or concrete.  xla:: and lazy:: are
+  // virtual devices, meaning they may map to a gpu, tpu, etc. behind the
+  // scenes. In the future, non-virtual c10:: devices may also use lazy tensors
+  // through a mode, in which case these APIs should still work, but should be
+  // identity mappings.
+  virtual torch_lazy_tensors::Device GetBackendDevice(
+      c10::Device device) const = 0;
 
-  virtual std::shared_ptr<std::vector<std::string>> GetReplicationDevices()
-      const = 0;
-
-  virtual at::DeviceType HardwareDeviceType() const = 0;
+  // TODO(whc)
+  // Additional APIs expected for supporting distributed training, to be
+  // designed
 
   /**
    * Debug/Metrics
