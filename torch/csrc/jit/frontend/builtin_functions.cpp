@@ -169,6 +169,13 @@ def full_0_4(size:List[int], fill_value:number, *, out:Tensor) -> Tensor:
   return torch.full(size, fill_value, out=out)
 )SCRIPT";
 
+auto binary_minmax = R"SCRIPT(
+def min(self: Tensor, other: Tensor) -> Tensor:
+  return torch.minimum(self, other)
+def max(self: Tensor, other: Tensor) -> Tensor:
+  return torch.maximum(self, other)
+)SCRIPT";
+
 struct BuiltinFunctionRegistry {
   const std::vector<Function*>& getAllBuiltinFunctionsFor(Symbol name) {
     const static std::vector<Function*> empty;
@@ -236,6 +243,7 @@ struct BuiltinFunctionRegistry {
 
     loadSource(aten_ops, "aten");
     loadSource(aten_ops_additional, "aten");
+    loadSource(binary_minmax, "aten");
 
     // Loads functions implementing historic behavior, see note [Versioned
     // Symbols]

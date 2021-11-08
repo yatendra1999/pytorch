@@ -618,13 +618,13 @@ Value* emitBuiltinCall(
 
   std::stringstream failure_messages;
   std::vector<const FunctionSchema*> schemas;
-  schemas.reserve(variants.size());
-  for (const std::shared_ptr<Operator>& op : variants) {
-    schemas.push_back(&op->schema());
-  }
+  schemas.reserve(builtin_functions.size() + variants.size());
   for (const auto method : builtin_functions) {
     method->ensure_defined();
     schemas.push_back(&method->getSchema());
+  }
+  for (const std::shared_ptr<Operator>& op : variants) {
+    schemas.push_back(&op->schema());
   }
 
   // no operators found with the same name, print out similarly named operators
@@ -649,10 +649,10 @@ Value* emitBuiltinCall(
 
   auto matched = matchSchemas(schemas, loc, graph, args, kwargs, self);
 
-  if (matched.first < variants.size()) {
+  if (matched.first >= builtin_functions.size()) {
     return emitBuiltinNode(matched.second, loc, graph, name);
   } else {
-    auto& fn = *builtin_functions[matched.first - variants.size()];
+    auto& fn = *builtin_functions[matched.first];
     // we inline builtin calls because they are normally very small
     // wrappers and are not useful for keeping around to debug
     return insertGraph(
