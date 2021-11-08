@@ -23,6 +23,9 @@ from torch.ao.quantization import (
     FusedMovingAvgObsFakeQuantize,
     NoopObserver,
 )
+from torch.quantization.quantization_mappings import (
+    get_default_qat_module_mappings,
+)
 from torch.testing._internal.common_utils import TestCase
 
 from torch.testing._internal.common_quantization import (
@@ -48,6 +51,7 @@ from hypothesis import strategies as st
 import torch.testing._internal.hypothesis_utils as hu
 hu.assert_deadline_disabled()
 from functools import reduce
+import unittest
 
 class TestQuantizationAwareTraining(QuantizationTestCase):
     def setUp(self):
@@ -119,6 +123,96 @@ class TestQuantizationAwareTraining(QuantizationTestCase):
 
                 model = ManualConvLinearQATModel()
                 model = quantize_qat(model, test_only_train_fn, [self.img_data_2d_train])
+                checkQuantized(model)
+
+    @unittest.skip("Numerical match TBD")
+    def test_compare_embedding_bag_linear(self):
+        """
+        Test to compare:
+        - "DeFused" embedding bag constructed from Embedding + torch.sum,
+        - EmbeddingBag operator,
+        - a "DeFused" embedding bag constructed using a fused fakequant Embedding op.
+        """
+        prepare_mapping = get_default_qat_module_mappings()
+        prepare_mapping[nn.Embedding] = torch.nn.qat.FusedFakeQuantEmbedding
+
+        embed_linear_data_train = [[torch.randint(0, 10, (12, 12), dtype=torch.long),
+                                    torch.randn((12, 1), dtype=torch.float)]
+                                   for _ in range(20)]
+        for qengine in supported_qengines:
+            with override_quantized_engine(qengine):
+                fp32_model = DeFusedEmbeddingBagLinear().train()
+                ref_model = ManualEmbeddingBagLinear().train()
+                fp32_model.linear.weight = torch.nn.Parameter(torch.clone(ref_model.linear.weight))
+
+                fused_quant_model = prepare_qat(fp32_model, mapping=prepare_mapping)
+                quant_model = prepare_qat(fp32_model)
+                ref_quant_model = prepare_qat(ref_model)
+                self.checkObservers(fused_quant_model)
+
+                test_only_train_fn(fused_quant_model, self.embed_linear_data_train)
+                test_only_train_fn(quant_model, self.embed_linear_data_train)
+                test_only_train_fn(ref_quant_model, self.embed_linear_data_train)
+
+                # make activation_post_process is not inserted for Embedding
+                self.assertFalse(hasattr(fused_quant_model, "activation_post_process"))
+                fused_quant_model = convert(fused_quant_model)
+                quant_model = convert(quant_model)
+                ref_quant_model = convert(ref_quant_model)
+
+                def checkQuantized(fused_quant_model):
+                    # make sure Embedding is now a QuantizedEmbedding
+                    self.assertEqual(type(fused_quant_model.emb), nn.quantized.Embedding)
+                    # make sure Linear is now a QuantizedLinear
+                    self.assertEqual(type(fused_quant_model.linear), nn.quantized.Linear)
+
+                    test_only_eval_fn(fused_quant_model, self.embed_data)
+                    self.checkScriptable(fused_quant_model, self.embed_data)
+                    self.checkNoQconfig(fused_quant_model)
+
+                checkQuantized(fused_quant_model)
+
+                quant_value = quant_model(self.embed_data[0][0])
+                fused_quant_value = fused_quant_model(self.embed_data[0][0])
+                ref_quant_value = ref_quant_model(self.embed_data[0][0])
+                self.assertTrue(torch.isclose(quant_value, fused_quant_value).all())
+                self.assertTrue(torch.isclose(fused_quant_value, ref_quant_value).all())
+
+    def test_fused_fake_quant_embedding(self):
+        """
+        Test Embedding op with fused FakeQuant when using
+        a DeFusedEmbeddingBagLinear model.
+        """
+        prepare_mapping = get_default_qat_module_mappings()
+        prepare_mapping[nn.Embedding] = torch.nn.qat.FusedFakeQuantEmbedding
+
+        for qengine in supported_qengines:
+            with override_quantized_engine(qengine):
+                model = DeFusedEmbeddingBagLinear().train()
+                model = prepare_qat(model, mapping=prepare_mapping)
+                self.checkObservers(model)
+
+                test_only_train_fn(model, self.embed_linear_data_train)
+                # make sure activation_post_process is inserted after Linear.
+                self.assertEqual(type(model.linear.activation_post_process), FusedMovingAvgObsFakeQuantize)
+                # make sure that Embedding has a noop for activation.
+                self.assertEqual(type(model.emb.activation_post_process), NoopObserver)
+
+                model = convert(model)
+
+                def checkQuantized(model):
+                    # make sure Embedding is now a QuantizedEmbedding
+                    self.assertEqual(type(model.emb), nn.quantized.Embedding)
+                    # make sure Linear is now a QuantizedLinear
+                    self.assertEqual(type(model.linear), nn.quantized.Linear)
+
+                    test_only_eval_fn(model, self.embed_data)
+                    self.checkScriptable(model, self.embed_data)
+                    self.checkNoQconfig(model)
+
+                checkQuantized(model)
+                model = DeFusedEmbeddingBagLinear()
+                model = quantize_qat(model, test_only_train_fn, [self.embed_linear_data_train])
                 checkQuantized(model)
 
     def test_defused_embedding_bag_linear(self):
