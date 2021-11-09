@@ -1,10 +1,12 @@
 # Owner(s): ["oncall: quantization"]
 
 import math
+import itertools
 import torch
 import torch.nn as nn
 import torch.backends.mkldnn
 from torch.nn import Conv2d, BatchNorm2d, ReLU, init
+import torch.nn.functional as F
 from torch.nn.intrinsic.qat import ConvBn2d, ConvBnReLU2d
 from torch.nn.modules.utils import _pair
 import torch.nn.quantized as nnq
@@ -12,6 +14,7 @@ import torch.nn.quantized.dynamic as nnqd
 import torch.nn.qat as nnqat
 import torch.nn.qat.dynamic as nnqatd
 from torch.ao.quantization import (
+    fuse_modules,
     prepare,
     convert,
     prepare_qat,
@@ -48,6 +51,7 @@ from hypothesis import strategies as st
 import torch.testing._internal.hypothesis_utils as hu
 hu.assert_deadline_disabled()
 from functools import reduce
+from copy import deepcopy
 
 class TestQuantizationAwareTraining(QuantizationTestCase):
     def test_manual(self):
@@ -911,6 +915,53 @@ class TestEmbeddingBagQATModule(TestCase):
                                     "torch.per_channel_affine_float_qparams"):
             nnqat.EmbeddingBag.from_float(embed_bag)
 
+class ReferenceLinearBatchNorm1d(nn.Module):
+    def __init__(self, linear, bn, qconfig):
+        super().__init__()
+        self.linear_weight = nn.Parameter(linear.weight.clone().detach())
+        self.linear_bias = nn.Parameter(linear.bias.clone().detach())
+        self.bn = deepcopy(bn)
+        self.weight_fq = qconfig.weight()
+        self.output_fq = qconfig.activation()
+
+    def forward(self, x):
+        weight_fq = self.weight_fq(self.linear_weight)
+        x = F.linear(x, weight_fq, self.linear_bias)
+        x = self.bn(x)
+        x = self.output_fq(x)
+        return x
+
+class TestLinearBNQATModule(TestCase):
+    def test_linear_bn_numerics(self):
+        test_cases = itertools.product(
+            [2, 4],     # batch_size
+            [2, 3, 4],  # in_features
+            [2, 3]      # out_features
+        )
+
+        for test_case in test_cases:
+            batch_size, in_features, out_features = test_case
+
+            data = torch.randn(batch_size, out_features, in_features)
+
+            m = nn.Sequential(nn.Linear(in_features, out_features), nn.BatchNorm1d(out_features)).train()
+            m.qconfig = torch.quantization.get_default_qat_qconfig()
+            m_ref = ReferenceLinearBatchNorm1d(m[0], m[1], m.qconfig)
+            m_fused = fuse_modules(m, [['0', '1']])
+            m_fused = torch.quantization.prepare_qat(m_fused)
+
+            result_fused = m_fused(data)
+            result_ref = m_ref(data)
+            self.assertEqual(result_ref, result_fused)
+
+            m_fused.apply(torch.ao.quantization.disable_fake_quant)
+            m_ref.apply(torch.ao.quantization.disable_fake_quant)
+
+            result_fused = m_fused(data)
+            result_unfused = m(data)
+            result_ref = m_ref(data)
+            self.assertEqual(result_ref, result_unfused)
+            self.assertEqual(result_ref, result_fused)
 
 if __name__ == '__main__':
     raise RuntimeError("This test file is not meant to be run directly, use:\n\n"
