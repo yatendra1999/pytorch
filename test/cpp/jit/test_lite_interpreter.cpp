@@ -1446,7 +1446,7 @@ TEST(RunTimeTest, RuntimeCall) {
   };
   int64_t model_version = caffe2::serialize::kProducedBytecodeVersion;
 
-  auto foo = std::make_unique<mobile::Function>(c10::QualifiedName("foo"));
+  auto foo = std::make_shared<mobile::Function>(c10::QualifiedName("foo"));
   c10::ivalue::TupleElements debug_handles_m_tuple;
   parseInstructions(
       "foo",
@@ -1480,7 +1480,7 @@ TEST(RunTimeTest, RuntimeCall) {
       call.get());
   parseRegisterSize(rsize, call.get());
 
-  foo->append_function(*call);
+  foo->append_function(std::move(call));
 
   std::vector<IValue> inputs{at::tensor(1)};
   foo->run(inputs);
@@ -1495,6 +1495,14 @@ TEST(LiteInterpreterUpgraderTest, DivTensorV2) {
   auto test_model_file = filePath.substr(0, filePath.find_last_of("/\\") + 1);
   test_model_file.append("upgrader_models/test_versioned_div_tensor_v2.ptl");
   mobile::Module m_module = _load_for_mobile(test_model_file);
+
+  auto intrsuction_list = m_module.get_method("forward").function().get_code()->instructions_;
+  uint64_t number_of_call_instruction = 0;
+  for(auto& instruction: intrsuction_list) {
+    number_of_call_instruction += (instruction.op  == OpCode::CALL);
+  }
+  ASSERT_EQ(number_of_call_instruction, 3);
+
   std::vector<IValue> inputs = {
       IValue(6 * torch::ones({1})), IValue(3 * torch::ones({1}))};
   auto actual_output = m_module.forward(inputs);
@@ -1509,7 +1517,7 @@ TEST(LiteInterpreterUpgraderTest, Upgrader) {
   for (auto upgrader_function : kUpgraderFunctions) {
     upgrader_functions.push_back(upgrader_function);
   }
-  ASSERT_EQ(kUpgraderBytecode.size(), upgrader_functions.size());
+  ASSERT_EQ(kUpgraderFunctions.size(), upgrader_functions.size());
 }
 
 

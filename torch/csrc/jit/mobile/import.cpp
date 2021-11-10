@@ -207,6 +207,7 @@ class BytecodeDeserializer final {
 
  private:
   TypePtr resolveTypeName(const c10::QualifiedName& qn);
+  void init_upgrader(mobile::Function* function) ;
   void parseMethods(
       c10::ivalue::TupleElements&& vals,
       c10::optional<c10::ivalue::TupleElements>&& debug_handles,
@@ -303,6 +304,12 @@ void BytecodeDeserializer::parseFunctionSchema(
   }
 }
 
+void BytecodeDeserializer::init_upgrader(mobile::Function* function) {
+  for (auto upgrader_function : kUpgraderFunctions) {
+    function->append_function(upgrader_function);
+  }
+}
+
 void BytecodeDeserializer::parseMethods(
     c10::ivalue::TupleElements&& vals,
     c10::optional<c10::ivalue::TupleElements>&& debug_handles,
@@ -380,7 +387,7 @@ void BytecodeDeserializer::parseMethods(
       debug_handles_m_tuple =
           std::move(*std::move((*debug_handles)[i]).toTuple()).elements();
     }
-
+    init_upgrader(function.get());
     // 1. First pass all operators from models
     parseOperators(
         std::move(ops_list),
@@ -399,7 +406,9 @@ void BytecodeDeserializer::parseMethods(
         function_name,
         std::move(ins_list),
         debug_handles_m_tuple,
-        function.get());
+        function.get(),
+        use_upgrader,
+        operator_version_);
 
     parseConstants(consts_list, function.get());
 
