@@ -171,7 +171,7 @@ def run(source_yaml: str, output_dir: str, dry_run: bool, impl_path: Optional[st
         })
 
         # Generate headers for shape/dtype funcs for non-meta kernels
-        fm.write_with_template(f'{backend_dispatch_key}ShapeDtype.h', 'ShapeDtype.h', lambda: {
+        fm.write_with_template(f'{backend_dispatch_key}ShapeInference.h', 'ShapeInference.h', lambda: {
             'lazy_ir_sysinc': [f'#include <{path}>' for path in [
                 "c10/core/ScalarType.h",
                 "c10/util/Optional.h",
@@ -180,11 +180,12 @@ def run(source_yaml: str, output_dir: str, dry_run: bool, impl_path: Optional[st
             ]],
             'lazy_ir_inc': [f'#include "{path}"' for path in [
                 "torch/csrc/lazy/core/ir.h",
+                "lazy_tensors/shape.h",
             ]],
             'DispatchKey': backend_dispatch_key,
             'dispatch_namespace': backend_dispatch_key.lower(),
             'func_declarations': list(concat_map_codegen(
-                lambda f: dest.gen_lazy_shape_dtype_decl(f, backend_indices[backend_dispatch_key]),
+                lambda f: dest.gen_lazy_shape_inference_decl(f, backend_indices[backend_dispatch_key]),
                 grouped_native_functions
             )),
         })

@@ -43,25 +43,21 @@
  *
  */
 
-#include "lazy_tensor_core/csrc/ts_backend/LazyShapeDtype.h"
+#include "lazy_tensor_core/csrc/ts_backend/LazyShapeInference.h"
 #include "aten/src/ATen/WrapDimUtils.h"
 #include "torch/csrc/api/include/torch/enum.h"
 
 namespace torch_lazy_tensors {
 namespace ir {
 namespace ops {
+using Shape = lazy_tensors::Shape;
 
-std::vector<std::vector<int64_t>> compute_shape_embedding_dense_backward(const at::Tensor& grad_output, const at::Tensor& indices, int64_t num_weights, int64_t padding_idx, bool scale_grad_by_freq) {
+std::vector<Shape> compute_shape_embedding_dense_backward(const at::Tensor& grad_output, const at::Tensor& indices, int64_t num_weights, int64_t padding_idx, bool scale_grad_by_freq) {
   // Based on aten/src/ATen/native/Embedding.cpp::embedding_dense_backward_cpu.
-  return {{num_weights, grad_output.size(-1)}};
+  return {Shape(grad_output.scalar_type(), {num_weights, grad_output.size(-1)})};
 }
 
-std::vector<c10::ScalarType> compute_dtype_embedding_dense_backward(const at::Tensor& grad_output, const at::Tensor& indices, int64_t num_weights, int64_t padding_idx, bool scale_grad_by_freq) {
-  // Based on aten/src/ATen/native/Embedding.cpp::embedding_dense_backward_cpu.
-  return {grad_output.scalar_type()};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_index_select(const at::Tensor & self, int64_t dim,
+std::vector<Shape> compute_shape_index_select(const at::Tensor & self, int64_t dim,
     const at::Tensor & index) {
   // Based on definition of https://pytorch.org/docs/stable/generated/torch.index_select.html.
   // Promote Rank 0 index tensor to a 1 * 1 tensor.
@@ -74,24 +70,15 @@ std::vector<std::vector<int64_t>> compute_shape_index_select(const at::Tensor & 
   std::vector<int64_t> output_sizes(self_sizes.begin(), self_sizes.end());
   output_sizes[dim] = index_size;
 
-  return {output_sizes};
+  return {Shape(self.scalar_type(), output_sizes)};
 }
 
-std::vector<c10::ScalarType> compute_dtype_index_select(const at::Tensor& self, int64_t dim, const at::Tensor& index) {
-  return {self.scalar_type()};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_kl_div_backward(const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& target, int64_t reduction, bool log_target) {
+std::vector<Shape> compute_shape_kl_div_backward(const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& target, int64_t reduction, bool log_target) {
   // Based on definition of aten/src/ATen/native/Loss.cpp::kl_div_backward_cpu.
-  return {self.sizes().vec()};
+  return {Shape(self.scalar_type(), self.sizes().vec())};
 }
 
-std::vector<c10::ScalarType> compute_dtype_kl_div_backward(const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& target, int64_t reduction, bool log_target) {
-  // Based on definition of aten/src/ATen/native/Loss.cpp::kl_div_backward_cpu.
-  return {self.scalar_type()};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_cat(at::TensorList tensors, int64_t dim) {
+std::vector<Shape> compute_shape_cat(at::TensorList tensors, int64_t dim) {
   // TODO(whc) support cat in codegen and move this to compute_*_cat functions
   std::vector<int64_t> out_shape(tensors[0].sizes().begin(), tensors[0].sizes().end());
 
@@ -101,15 +88,10 @@ std::vector<std::vector<int64_t>> compute_shape_cat(at::TensorList tensors, int6
     extended_dim_shape += tensor.sizes()[dim];
   }
   out_shape[dim] = extended_dim_shape;
-  return {out_shape};
+  return {Shape(tensors[0].scalar_type(), out_shape)};
 }
 
-std::vector<c10::ScalarType> compute_dtype_cat(at::TensorList tensors, int64_t dim) {
-  // cat requires same dtype of all inputs
-  return {tensors[0].scalar_type()};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_native_layer_norm(const at::Tensor & input,
+std::vector<Shape> compute_shape_native_layer_norm(const at::Tensor & input,
     at::IntArrayRef normalized_shape, const c10::optional<at::Tensor> & weight, const c10::optional<at::Tensor> & bias,
     double eps) {
   // Copied from aten/src/ATen/native/layer_norm.cpp::layer_norm_cpu_out.
@@ -125,166 +107,101 @@ std::vector<std::vector<int64_t>> compute_shape_native_layer_norm(const at::Tens
     stat_shape.emplace_back(1);
   }
 
-  return {std::move(input_shape), stat_shape, std::move(stat_shape)};
+  return {Shape(input.scalar_type(), std::move(input_shape)),
+          Shape(input.scalar_type(), stat_shape),
+          Shape(input.scalar_type(), std::move(stat_shape))};
 }
 
-std::vector<c10::ScalarType> compute_dtype_native_layer_norm(const at::Tensor & input, at::IntArrayRef normalized_shape,
-    const c10::optional<at::Tensor> & weight, const c10::optional<at::Tensor> & bias, double eps) {
-  return {input.scalar_type(), input.scalar_type(), input.scalar_type()};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_native_layer_norm_backward(const at::Tensor& grad_out,
+std::vector<Shape> compute_shape_native_layer_norm_backward(const at::Tensor& grad_out,
     const at::Tensor& input, at::IntArrayRef normalized_shape, const at::Tensor& mean, const at::Tensor& rstd,
     const c10::optional<at::Tensor>& weight, const c10::optional<at::Tensor>& bias, ::std::array<bool,3> output_mask) {
-  std::vector<std::vector<int64_t>> shapes;
-  shapes.push_back(output_mask[0] ? input.sizes().vec() : std::vector<int64_t>{});
-  shapes.push_back(output_mask[1] && weight ? weight->sizes().vec() : std::vector<int64_t>{});
-  shapes.push_back(output_mask[2] && bias ? bias->sizes().vec() : std::vector<int64_t>{});
+  std::vector<Shape> shapes;
+  shapes.push_back(Shape(input.scalar_type(),
+                         output_mask[0] ? input.sizes().vec() : std::vector<int64_t>{}));
+  shapes.push_back(Shape(weight && weight->defined() ? weight->scalar_type() : input.scalar_type(),
+                         output_mask[1] && weight ? weight->sizes().vec() : std::vector<int64_t>{}));
+  shapes.push_back(Shape(bias && weight->defined() ? bias->scalar_type() : input.scalar_type(),
+                         output_mask[2] && bias ? bias->sizes().vec() : std::vector<int64_t>{}));
   return shapes;
 }
 
-std::vector<c10::ScalarType> compute_dtype_native_layer_norm_backward(const at::Tensor& grad_out,
-    const at::Tensor& input, at::IntArrayRef normalized_shape, const at::Tensor& mean, const at::Tensor& rstd,
-    const c10::optional<at::Tensor>& weight, const c10::optional<at::Tensor>& bias, ::std::array<bool,3> output_mask)
-{
-  std::vector<c10::ScalarType> dtypes;
-  dtypes.push_back(input.scalar_type());
-  dtypes.push_back(weight && weight->defined() ? weight->scalar_type() : input.scalar_type());
-  dtypes.push_back(bias && weight->defined() ? bias->scalar_type() : input.scalar_type());
-  return dtypes;
-}
-
-std::vector<std::vector<int64_t>> compute_shape_mean(const at::Tensor& self, c10::optional<at::ScalarType> dtype) {
-  return {{}};
-}
-
-std::vector<c10::ScalarType> compute_dtype_mean(const at::Tensor& self, c10::optional<at::ScalarType> dtype) {
+std::vector<Shape> compute_shape_mean(const at::Tensor& self, c10::optional<at::ScalarType> dtype) {
   if (dtype.has_value()) {
-    return {dtype.value()};
+    return {Shape(dtype.value(), {})};
   }
-  return {self.scalar_type()};
+  return {Shape(self.scalar_type(), {})};
 }
 
-std::vector<std::vector<int64_t>> compute_shape_mv(const at::Tensor& self, const at::Tensor& vec) {
-  return {{self.size(0)}};
+std::vector<Shape> compute_shape_mv(const at::Tensor& self, const at::Tensor& vec) {
+  return {Shape(self.scalar_type(), {self.size(0)})};
 }
 
-std::vector<c10::ScalarType> compute_dtype_mv(const at::Tensor& self, const at::Tensor& vec) {
-  return {self.scalar_type()};
+std::vector<Shape> compute_shape_relu(const at::Tensor& self) {
+  return {Shape(self.scalar_type(), self.sizes().vec())};
 }
 
-std::vector<std::vector<int64_t>> compute_shape_relu(const at::Tensor& self) {
-  return {self.sizes().vec()};
+std::vector<Shape> compute_shape_bitwise_and(const at::Tensor& self, const at::Scalar& other) {
+  return {Shape(self.scalar_type(), self.sizes().vec())};
 }
 
-std::vector<c10::ScalarType> compute_dtype_relu(const at::Tensor& self) {
-  return {self.scalar_type()};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_bitwise_and(const at::Tensor& self, const at::Scalar& other) {
-  return {self.sizes().vec()};
-}
-
-std::vector<c10::ScalarType> compute_dtype_bitwise_and(const at::Tensor& self, const at::Scalar& other) {
-  return {self.scalar_type()};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_sum(
-    const at::Tensor& self, c10::optional<at::ScalarType> dtype) {
-  return {{}};
-}
-
-std::vector<c10::ScalarType> compute_dtype_sum(
+std::vector<Shape> compute_shape_sum(
     const at::Tensor& self, c10::optional<at::ScalarType> dtype) {
   if (dtype.has_value()) {
-    return {dtype.value()};
+    return {Shape(dtype.value(), {})};
   }
   // It's undocumented, but torch::sum promotes all integral types to int64_t by
   // default
   if (isIntegralType(self.scalar_type(), /*includeBool*/ true)) {
-    return {c10::ScalarType::Long};
+    return {Shape(c10::ScalarType::Long, {})};
   }
-  return {self.scalar_type()};
-  ;
+  return {Shape(self.scalar_type(), {})};;
 }
 
-std::vector<std::vector<int64_t>> compute_shape_zero(at::Tensor& self) {
-  return {self.sizes().vec()};
+std::vector<Shape> compute_shape_zero(at::Tensor& self) {
+  return {Shape(self.scalar_type(), self.sizes().vec())};
 }
 
-std::vector<c10::ScalarType> compute_dtype_zero(at::Tensor& self) {
-  return {self.scalar_type()};
+std::vector<Shape> compute_shape_trace(const at::Tensor& self) {
+  return {Shape(self.scalar_type(), {})};
 }
 
-std::vector<std::vector<int64_t>> compute_shape_trace(const at::Tensor& self) {
-  return {{}};
+std::vector<Shape> compute_shape_sort(const at::Tensor & self, int64_t dim, bool descending) {
+  return {Shape(self.scalar_type(), self.sizes().vec()),
+          Shape(c10::ScalarType::Long, self.sizes().vec())};
 }
 
-std::vector<c10::ScalarType> compute_dtype_trace(const at::Tensor& self) {
-  return {self.scalar_type()};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_sort(const at::Tensor & self, int64_t dim, bool descending) {
-  return {self.sizes().vec(), self.sizes().vec()};
-}
-
-std::vector<c10::ScalarType> compute_dtype_sort(const at::Tensor & self, int64_t dim, bool descending) {
-  return {self.scalar_type(), c10::ScalarType::Long};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_smooth_l1_loss(
+std::vector<Shape> compute_shape_smooth_l1_loss(
     const at::Tensor& self, const at::Tensor& target, int64_t reduction,
     double beta) {
   // Taken from definition of 'Output' shape here:
   // https://pytorch.org/docs/stable/generated/torch.nn.SmoothL1Loss.html
   switch (reduction) {
     case at::Reduction::None:
-      return {self.sizes().vec()};
+      return {Shape(self.scalar_type(), self.sizes().vec())};
     default:
-      return {{}};
+      return {Shape(self.scalar_type(), {})};
   }
 }
 
-std::vector<c10::ScalarType> compute_dtype_smooth_l1_loss(
-    const at::Tensor& self, const at::Tensor& target, int64_t reduction,
-    double beta) {
-  return {self.scalar_type()};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_smooth_l1_loss_backward(
+std::vector<Shape> compute_shape_smooth_l1_loss_backward(
     const at::Tensor& grad_output, const at::Tensor& self,
     const at::Tensor& target, int64_t reduction, double beta) {
   // The `grad_output` tensor is really the input to this kernel, and while its
   // shape may vary following the logic of the forward output, the output of
   // this kernel should have fixed shapes matching the inputs to the forward
   // kernel.
-  return {self.sizes().vec()};
+  return {Shape(self.scalar_type(), self.sizes().vec())};
 }
 
-std::vector<c10::ScalarType> compute_dtype_smooth_l1_loss_backward(
-    const at::Tensor& grad_output, const at::Tensor& self,
-    const at::Tensor& target, int64_t reduction, double beta) {
-  return {self.scalar_type()};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_log_sigmoid_forward(const at::Tensor& self) {
+std::vector<Shape> compute_shape_log_sigmoid_forward(const at::Tensor& self) {
   // Based on definition of aten/src/ATen/native/Activation.cpp::log_sigmoid_forward_out_cpu.
-  return {self.sizes().vec(), self.sizes().vec()};
+  return {Shape(self.scalar_type(), self.sizes().vec()),
+          Shape(self.scalar_type(), self.sizes().vec())};
 }
 
-std::vector<c10::ScalarType> compute_dtype_log_sigmoid_forward(const at::Tensor& self) {
-  // Based on definition of aten/src/ATen/native/Activation.cpp::log_sigmoid_forward_out_cpu.
-  return {self.scalar_type(), self.scalar_type()};
-}
-
-std::vector<std::vector<int64_t>> compute_shape_log_sigmoid_backward(const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& buffer) {
+std::vector<Shape> compute_shape_log_sigmoid_backward(const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& buffer) {
   // Based on definition of aten/src/ATen/native/Activation.cpp::log_sigmoid_backward_cpu*.
-  return {grad_output.sizes().vec()};
-}
-
-std::vector<c10::ScalarType> compute_dtype_log_sigmoid_backward(const at::Tensor& grad_output, const at::Tensor& self, const at::Tensor& buffer) {
-  // Based on definition of aten/src/ATen/native/Activation.cpp::log_sigmoid_backward_cpu*.
-  return {grad_output.scalar_type()};
+  return {Shape(grad_output.scalar_type(), grad_output.sizes().vec())};
 }
 
 } // namespace ops
