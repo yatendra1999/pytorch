@@ -968,6 +968,7 @@ class TestQuantizeDBR(QuantizeDBRTestCase):
             print(tabulate.tabulate(
                 to_print, headers=['layer_name', 'fqn', 'type', 'sqnr']))
 
+
 @skipIfNoFBGEMM
 class TestQuantizeDBRModels(QuantizeDBRTestCase):
     @skip_if_no_torchvision
