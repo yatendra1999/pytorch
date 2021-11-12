@@ -1808,26 +1808,17 @@ def sample_inputs_t(op_info, device, dtype, requires_grad, **kwargs):
 
 
 def sample_inputs_mm(op_info, device, dtype, requires_grad, **kwargs):
-    make_arg = partial(make_tensor, device=device, dtype=dtype)
+    make_arg = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
 
     first_shape, second_shape = (S, M), (M, S)
-    sample_inputs = []
 
-    sample_inputs.append(
-        SampleInput(make_arg(first_shape, requires_grad=requires_grad),
-                    args=(make_arg(second_shape, requires_grad=requires_grad),)))
+    def generate_inputs():
+        yield SampleInput(make_arg(first_shape), args=(make_arg(second_shape),))
 
-    if dtype.is_complex:
-        sample_inputs.append(
-            SampleInput(make_arg(first_shape, requires_grad=requires_grad),
-                        args=(make_arg(second_shape).conj().requires_grad_(requires_grad),)))
+        if dtype.is_complex:
+            yield SampleInput(make_arg(first_shape), args=(make_arg(second_shape).conj(),))
 
-        sample_inputs.append(
-            SampleInput(
-                make_arg(first_shape).transpose(0, 1).requires_grad_(requires_grad),
-                args=(make_arg(second_shape).transpose(0, 1).conj().requires_grad_(requires_grad),)))
-
-    return sample_inputs
+    return list(generate_inputs())
 
 def sample_inputs_addmm(op_info, device, dtype, requires_grad, **kwargs):
     alpha_val = kwargs.get('alpha', 2 + 3j if dtype.is_complex else 0.6)
@@ -1896,23 +1887,14 @@ def sample_inputs_bmm(self, device, dtype, requires_grad, **kwargs):
     )
 
 def sample_inputs_dot_vdot(self, device, dtype, requires_grad, **kwargs):
+    make_arg = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
     sample_inputs = []
-    sample_inputs.append(SampleInput(
-        make_tensor((S, ), device, dtype, low=None, high=None, requires_grad=requires_grad),
-        args=(
-            make_tensor((S, ), device, dtype, low=None, high=None, requires_grad=requires_grad),
-        )
-    ))
+    sample_inputs.append(SampleInput(make_arg((S, )), args=(make_arg((S, )),)))
     if dtype.is_complex:
         # dot/vdot for (conj(input), conj(arg_tensor)) and (conj(input), arg_tensor)
         # is tested in test_conj_view (which tests operations with only conjugated input tensor
         # -- not conjugated arg tensors)
-        sample_inputs.append(SampleInput(
-            make_tensor((S, ), device, dtype, low=None, high=None, requires_grad=requires_grad),
-            args=(
-                torch.conj(make_tensor((S, ), device, dtype, low=None, high=None, requires_grad=requires_grad)),
-            )
-        ))
+        sample_inputs.append(SampleInput(make_arg((S, )), args=(make_arg((S, )).conj(),)))
     return sample_inputs
 
 def sample_inputs_addmv(op_info, device, dtype, requires_grad, **kwargs):
@@ -4955,29 +4937,19 @@ def sample_inputs_einsum(op_info, device, dtype, requires_grad=False, **kwargs):
 
 
 def sample_inputs_linalg_qr(op_info, device, dtype, requires_grad=False, **kwargs):
-    """
-    This function generates input for torch.linalg.qr
-    The input is generated as the itertools.product of 'batches' and 'ns'.
-    """
+    # QR is just well defined when the matrix is full rank
+    make_fullrank = make_fullrank_matrices_with_distinct_singular_values
+    make_arg = partial(make_fullrank, dtype=dtype, device=device, requires_grad=requires_grad)
+
     batches = [(), (0,), (2, ), (1, 1)]
     ns = [5, 2, 0]
-    out = []
-    for batch, (m, n) in product(batches, product(ns, ns)):
-        a = torch.randn(*batch, m, n, dtype=dtype, device=device, requires_grad=requires_grad)
-        out.append(SampleInput(a))
-    return out
 
-def sample_inputs_geqrf(op_info, device, dtype, requires_grad=False):
-    batches = [(), (0, ), (2, ), (1, 1)]
-    ns = [5, 2, 0]
-    samples = []
-    for batch, (m, n) in product(batches, product(ns, ns)):
-        # TODO: CUDA path doesn't work with batched or empty inputs
-        if torch.device(device).type == 'cuda' and (batch != () or m == 0 or n == 0):
-            continue
-        a = make_tensor((*batch, m, n), device, dtype, low=None, high=None, requires_grad=requires_grad)
-        samples.append(SampleInput(a))
-    return samples
+    def generate_inputs():
+        for batch, (m, n) in product(batches, product(ns, ns)):
+            shape = batch + (m, n)
+            yield SampleInput(make_arg(*shape))
+
+    return list(generate_inputs())
 
 def sample_inputs_flip(op_info, device, dtype, requires_grad):
     make_arg = partial(make_tensor, dtype=dtype, device=device, requires_grad=requires_grad)
@@ -5710,85 +5682,35 @@ def sample_inputs_i0_i1(op_info, device, dtype, requires_grad, **kwargs):
     return samples
 
 
-def sample_inputs_rsub(op_info, device, dtype, requires_grad, variant='tensor', **kwargs):
-    def _make_tensor_helper(shape, low=None, high=None):
-        return make_tensor(shape, device, dtype, low=low, high=high, requires_grad=requires_grad)
+def sample_inputs_rsub(op_info, device, dtype, requires_grad, other_scalar, **kwargs):
+    make_arg = partial(make_tensor, device=device)
 
-    def _samples_with_alpha_helper(args, alphas, filter_fn=lambda arg_alpha: True):
-        filtered_product = filter(filter_fn, product(args, alphas))  # type: ignore[var-annotated]
-        return (SampleInput(input.detach().clone().requires_grad_(requires_grad),
-                            args=(arg,), kwargs=dict(alpha=alpha))
-                for (input, arg), alpha in filtered_product)
-
-    int_alpha, float_alpha, complex_alpha = 2, 0.1, 1 + 0.6j
-
-    if variant == 'tensor':
-        samples = (
-            SampleInput(_make_tensor_helper((S, S)), args=(_make_tensor_helper((S, S)),)),
-            SampleInput(_make_tensor_helper((S, S)), args=(_make_tensor_helper((S,)),)),
-            SampleInput(_make_tensor_helper((S,)), args=(_make_tensor_helper((S, S)),)),
-            SampleInput(_make_tensor_helper(()), args=(_make_tensor_helper(()),)),
-            SampleInput(_make_tensor_helper(()), args=(_make_tensor_helper((S,)),)),
-            SampleInput(_make_tensor_helper((S,)), args=(_make_tensor_helper(()),)),
-        )
-
-        if dtype.is_complex:
-            alphas = [int_alpha, float_alpha, complex_alpha]
-        elif dtype.is_floating_point:
-            alphas = [int_alpha, float_alpha]
-        else:
-            alphas = [int_alpha]
-
-        args = ((_make_tensor_helper((S, S)), _make_tensor_helper((S, S))),
-                (_make_tensor_helper((S, S)), _make_tensor_helper((S,))),
-                (_make_tensor_helper(()), _make_tensor_helper(())))
-        samples += tuple(_samples_with_alpha_helper(args, alphas))  # type: ignore[assignment]
-    elif variant == 'scalar':
-        # Scalar Other
-        samples = (SampleInput(_make_tensor_helper((S, S)), args=(0.5,)),
-                   SampleInput(_make_tensor_helper(()), args=(0.5,)),
-                   SampleInput(_make_tensor_helper((S, S)), args=(1.5j,)),
-                   SampleInput(_make_tensor_helper(()), args=(1.5j,)),
-                   SampleInput(_make_tensor_helper((S, S)), args=(0.4 + 1.2j,)),
-                   SampleInput(_make_tensor_helper(()), args=(1.2 + 1.76j,)))
-
-        scalar_args = [(_make_tensor_helper((S, S)), 0.5), (_make_tensor_helper(()), 0.5),
-                       (_make_tensor_helper((S, S)), 2.7j), (_make_tensor_helper(()), 2.7j),
-                       (_make_tensor_helper((S, S)), 1 - 2.7j), (_make_tensor_helper(()), 1 + 2.7j)]
-
-        alphas = [int_alpha, float_alpha, complex_alpha]
-
-        def filter_fn(arg_alpha):
-            arg, alpha = arg_alpha
-            if isinstance(alpha, complex):
-                if dtype.is_complex or isinstance(arg[1], complex):
-                    return True
-                else:
-                    # complex alpha is valid only if either `self` or `other` is complex
-                    return False
-
-            # Non-Complex Alpha
-            return True
-
-        # Samples with alpha (scalar version) covers the following cases
-        # self    | other   | alpha
-        # -----------------------------------------
-        # real    | real    | real (int and float)
-        # real    | complex | real and complex
-        # complex | real    | real and complex
-        # complex | complex | real and complex
-        #
-        # It does not cover
-        # real    | real    | complex
-        # x = torch.randn(2, requires_grad=True, dtype=torch.float64)
-        # torch.rsub(x, 1, alpha=1. + 1.6j)
-        # RuntimeError: value cannot be converted to type double without overflow: (-1,-1.6)
-
-        samples += tuple(_samples_with_alpha_helper(scalar_args, alphas, filter_fn=filter_fn))  # type: ignore[assignment]
+    shapes = ((S, S), (S,), ())
+    if dtype.is_complex:
+        dtypes_a = (torch.int32, torch.float32, dtype)
+    elif dtype.is_floating_point:
+        dtypes_a = (torch.int32, dtype)
     else:
-        raise Exception("Invalid variant!")
+        dtypes_a = (dtype, )
+    dtypes_y = dtypes_a if other_scalar else (dtype,)
 
-    return samples
+    def gen_inputs():
+        for shape_x, shape_y, dtype_y, dtype_a in product(shapes, shapes, dtypes_y, dtypes_a):
+            if other_scalar and shape_y != ():
+                continue
+
+            requires_grad_y = (requires_grad and
+                               not other_scalar and
+                               (dtype_y.is_floating_point or dtype_y.is_complex))
+
+            x = make_arg(shape_x, dtype=dtype, requires_grad=requires_grad)
+            y = make_arg(shape_y, dtype=dtype_y, requires_grad=requires_grad_y)
+            if other_scalar:
+                y = y.item()
+            a = make_arg((), dtype=dtype_a).item()
+            yield SampleInput(x, args=(y,), kwargs={"alpha": a})
+
+    return list(gen_inputs())
 
 def sample_inputs_cumulative_ops(op_info, device, dtype, requires_grad, supports_dtype_kwargs=True, **kwargs):
     def _make_tensor_helper(shape, low=None, high=None):
@@ -8485,7 +8407,7 @@ op_db: List[OpInfo] = [
            dtypes=floating_and_complex_types(),
            dtypesIfCPU=floating_and_complex_types(),
            supports_autograd=False,
-           sample_inputs_func=sample_inputs_geqrf,
+           sample_inputs_func=sample_inputs_linalg_qr,
            decorators=[skipCUDAIfNoMagma, skipCUDAIfRocm, skipCPUIfNoLapack],),
     OpInfo('gt',
            aliases=('greater',),
@@ -10295,7 +10217,6 @@ op_db: List[OpInfo] = [
            dtypes=all_types_and_complex_and(torch.bfloat16, torch.half),
            variant_test_name='rsub_tensor',
            supports_out=False,
-           supports_inplace_autograd=False,
            skips=(
                # Reference: https://github.com/pytorch/pytorch/issues/53797
                # JIT doesn't understand complex literals
@@ -10304,13 +10225,12 @@ op_db: List[OpInfo] = [
                # please report a bug to PyTorch.
                DecorateInfo(unittest.skip("Skipped!"), 'TestJit', 'test_variant_consistency_jit', dtypes=[torch.cfloat, torch.cdouble]),  # noqa: B950
            ),
-           sample_inputs_func=partial(sample_inputs_rsub, variant='tensor'),),
+           sample_inputs_func=partial(sample_inputs_rsub, other_scalar=False),),
     OpInfo('rsub',
            dtypes=all_types_and_complex_and(torch.bfloat16, torch.half),
            variant_test_name='rsub_scalar',
            supports_out=False,
-           supports_inplace_autograd=False,
-           sample_inputs_func=partial(sample_inputs_rsub, variant='scalar'),
+           sample_inputs_func=partial(sample_inputs_rsub, other_scalar=True),
            skips=(
                # Reference: https://github.com/pytorch/pytorch/issues/53797
                # JIT doesn't understand complex literals
