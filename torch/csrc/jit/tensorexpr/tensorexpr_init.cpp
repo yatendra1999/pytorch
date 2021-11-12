@@ -892,6 +892,7 @@ void initTensorExprBindings(PyObject* module) {
   te.def(
       "replace_list_output_with_tuple",
       &tensorexpr::replaceListOutputWithTuple);
+  te.def("trim_graph", &tensorexpr::trimGraph);
   te.def("set_llvm_target_triple", [](const c10::optional<std::string>& val) {
     tensorexpr::LLVMTargetTriple() = val;
   });
