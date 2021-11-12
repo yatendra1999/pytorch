@@ -170,10 +170,11 @@ bool mayContainAlias(
 //  Map each value to all values that are alive at the same time.
 using LivenessMap = FastMap<const Value*, FastSet<const Value*>>;
 
-std::string dumpLivenessMap(const LivenessMap& liveness_map) {
+template <typename Map>
+std::string dumpMapFromValuesToListsOrSetsOfOtherValues(const Map& map) {
   std::ostringstream oss;
   oss << "{";
-  for (const auto& p : liveness_map) {
+  for (const auto& p : map) {
     oss << "{%" << p.first->debugName() << ": {";
     for (const auto* val : p.second) {
       oss << "%" << val->debugName() << ", ";
@@ -183,6 +184,10 @@ std::string dumpLivenessMap(const LivenessMap& liveness_map) {
   oss << "}";
   return oss.str();
 }
+
+std::string dumpLivenessMap(const LivenessMap& liveness_map) {
+  return dumpMapFromValuesToListsOrSetsOfOtherValues(liveness_map);
+};
 
 //  The algorithm does a traversal of the execution graph
 //  while keeping track of the live values.
@@ -262,7 +267,12 @@ LivenessMap GetLivenessMap(
     // for all the values in the alias set,
     // we set them "alive"
     for (auto* aliased_v : refined_aliases) {
-      GRAPH_DEBUG("aliased_v: %", aliased_v->debugName());
+      GRAPH_DEBUG(
+          "aliased_v: %",
+          aliased_v->debugName(),
+          " (for %",
+          v->debugName(),
+          ")");
       add_live_value_fn(aliased_v);
     }
   };
@@ -274,6 +284,11 @@ LivenessMap GetLivenessMap(
         live_values_use_chain[v].erase(node);
         if (!live_values_use_chain[v].size()) {
           // v is now dead
+          GRAPH_DEBUG(
+              "%",
+              v->debugName(),
+              " is now dead after ",
+              node->output(0)->debugName())
           live_values_use_chain.erase(v);
         }
       }
@@ -530,6 +545,10 @@ FastMap<const Value*, std::vector<const Value*>> GenerateSameStorageValues(
     seen.emplace_back(v);
   }
 
+  GRAPH_DEBUG(
+      "same_storage_values: ",
+      dumpMapFromValuesToListsOrSetsOfOtherValues(same_storage_values));
+
   return same_storage_values;
 }
 
@@ -709,6 +728,7 @@ StaticModule::StaticModule(
 
   AliasDb alias_db(
       graph_, /*isFrozen=*/false, /*enablePreciseTupleContainerAnalysis=*/true);
+  GRAPH_DEBUG("AliasDb: ", alias_db.toString());
 
   // construct SSA definition for non-constant nodes
   int node_idx = 0;
