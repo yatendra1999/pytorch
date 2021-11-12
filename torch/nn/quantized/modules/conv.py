@@ -232,7 +232,8 @@ class _ConvNd(nn.Module):
                 cls._FLOAT_MODULE.__name__ + " but got:" + str(type(mod))
             assert hasattr(mod, "qconfig"), \
                 "Input float module must have qconfig defined."
-            activation_post_process = mod.activation_post_process
+            activation_post_process = None if not hasattr(
+                mod, "activation_post_process") else mod.activation_post_process
             if type(mod) == cls._NNI_CONV_RELU_MODULE:
                 mod = mod[0]
             weight_post_process = mod.qconfig.weight()
