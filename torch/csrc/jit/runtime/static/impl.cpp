@@ -996,33 +996,38 @@ void StaticRuntime::create_memory_planner() {
 }
 
 c10::IValue StaticRuntime::move_outputs_to_tuple(uint32_t num_outputs) {
-#ifndef NDEBUG
+  bool should_move[num_outputs];
   for (const auto i : c10::irange(num_outputs)) {
-    // The exact output tensor should never be managed.
-    DCHECK(!isManagedOutputTensor(*outputs_[i]));
+    // REVIEW: is this actually safe or does trying to manage an
+    // output tensor indicate deeper problems? what was supposed to
+    // stop it?
+    should_move[i] = !isManagedOutputTensor(*outputs_[i]);
   }
-#endif
+#define TORCH_SR_MOVE_IF_POSSIBLE(idx)                      \
+  (should_move[(idx)] ? IValue(std::move(*outputs_[(idx)])) \
+                      : IValue(*outputs_[(idx)]))
   switch (num_outputs) {
     case 1:
-      return c10::ivalue::Tuple::create(std::move(*outputs_[0]));
+      return c10::ivalue::Tuple::create(TORCH_SR_MOVE_IF_POSSIBLE(0));
     case 2:
       return c10::ivalue::Tuple::create(
-          std::move(*outputs_[0]), std::move(*outputs_[1]));
+          TORCH_SR_MOVE_IF_POSSIBLE(0), TORCH_SR_MOVE_IF_POSSIBLE(1));
     case 3:
       return c10::ivalue::Tuple::create(
-          std::move(*outputs_[0]),
-          std::move(*outputs_[1]),
-          std::move(*outputs_[2]));
+          TORCH_SR_MOVE_IF_POSSIBLE(0),
+          TORCH_SR_MOVE_IF_POSSIBLE(1),
+          TORCH_SR_MOVE_IF_POSSIBLE(2));
     default: {
       std::vector<c10::IValue> outputs;
       outputs.reserve(num_outputs);
       for (const auto i : c10::irange(num_outputs)) {
         // use move here. Otherwise, clean up outputs_[i] explicitly
-        outputs.emplace_back(std::move(*outputs_[i]));
+        outputs.emplace_back(TORCH_SR_MOVE_IF_POSSIBLE(i));
       }
       return c10::ivalue::Tuple::create(std::move(outputs));
     }
   }
+#undef TORCH_SR_MOVE_IF_POSSIBLE
 }
 
 /// [Check and correct bad schema alias info at runtime]
@@ -1173,10 +1178,13 @@ c10::IValue StaticRuntime::run_impl(
 #ifndef NDEBUG
   check_for_memory_leak(false);
 #endif
-  // The exact output tensor should never be managed.
-  DCHECK(!isManagedOutputTensor(*outputs_[0]));
-  // use move here. Otherwise, clean up outputs_[0] explicitly
-  return std::move(*outputs_[0]);
+  // REVIEW: same safety question as above
+  if (C10_UNLIKELY(isManagedOutputTensor(*outputs_[0]))) {
+    return *outputs_[0];
+  } else {
+    // use move here. Otherwise, clean up outputs_[0] explicitly
+    return std::move(*outputs_[0]);
+  }
 }
 
 c10::IValue StaticRuntime::operator()(
@@ -1570,7 +1578,12 @@ void StaticRuntime::check_for_memory_leak(bool output_returned) {
     for (const auto i : c10::irange(pnode.num_outputs())) {
       const IValue* ival = &pnode.Output(i);
       const Value* val = pnode.node()->output(i);
-      if (planner_ && planner_->isManagedOutputTensorValue(val)) {
+      // subtlety: isManagedOutputTensorValue may give a false
+      // negative here if an output is an alias of this value, so
+      // check the actual tensor!
+      if (planner_ &&
+          (planner_->isManagedOutputTensor(*ival) ||
+           planner_->isManagedOutputTensorValue(val))) {
         // `ival` contains a managed output tensor that the runtime doesn't
         // reclaim at the end of an iteration, but the client does so
         // by explicitly calling `StaticRuntime::deallocateOutputTensors`.
